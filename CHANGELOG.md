@@ -8,6 +8,13 @@ All notable changes to this project will be documented in this file.
 
 - **Workbook Extraction Fix** — Fixed `extract_workbooks()` to correctly fetch workbooks from the Azure API. The `Microsoft.Insights/workbooks` List endpoint requires a `category` query parameter; without it, zero results are returned. The extractor now queries both `sentinel` and `workbook` categories. Additionally, the server-side `sourceId` filter was replaced with client-side case-insensitive filtering because Azure stores resource paths in lowercase.
 
+### Security
+
+- **FINDING-005** (MEDIUM): Setup scripts no longer print `AZURE_CLIENT_SECRET` to stdout. Credentials are written to `.env.sentinel-backup` with `chmod 600` permissions instead. `.env.*` added to `.gitignore`.
+- **FINDING-006** (MEDIUM): Added input validation in both setup scripts — subscription IDs are validated as UUIDs, resource group and workspace names validated against Azure naming rules (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, max 90 chars).
+- **FINDING-007** (MEDIUM): `assign_role` / `Assign-Role` functions now check exit codes; on failure they verify whether the role is already assigned (idempotent success). Unresolved failures are reported with a count and explicit guidance, instead of being silently swallowed.
+- **FINDING-008** (LOW): All PowerShell `az` CLI invocations now quote variable arguments (e.g. `--display-name "$AppName"`) to prevent argument splitting on values containing spaces.
+
 - **Workbook Restore** — Implemented `restore_workbooks()` in `sentinel_restore.py`. Each workbook is restored via a single PUT to `Microsoft.Insights/workbooks/{name}`.
   - Strips server-managed properties (`timeModified`, `userId`, `revision`) from the PUT body.
   - Rewrites `properties.sourceId` to point to the target workspace.

@@ -2185,7 +2185,7 @@ def parse_args() -> argparse.Namespace:
     what.add_argument("--restore-watchlists", action="store_true", help="Restore Watchlists")
     what.add_argument("--restore-dcr", action="store_true", help="Restore Data Collection Rules")
     what.add_argument("--restore-dce", action="store_true", help="Restore Data Collection Endpoints")
-    what.add_argument("--restore-workbooks", action="store_true", help="Restore Workbooks")
+    what.add_argument("sooks", action="store_true", help="Restore Workbooks")
     what.add_argument("--restore-logic-apps", action="store_true", help="Restore Logic Apps")
     what.add_argument("--restore-custom-tables", action="store_true", help="Restore Custom Tables")
     what.add_argument("--restore-table-retention", action="store_true", help="Restore table retention settings")
