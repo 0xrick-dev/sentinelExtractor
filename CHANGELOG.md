@@ -6,6 +6,17 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Workbook Extraction Fix** — Fixed `extract_workbooks()` to correctly fetch workbooks from the Azure API. The `Microsoft.Insights/workbooks` List endpoint requires a `category` query parameter; without it, zero results are returned. The extractor now queries both `sentinel` and `workbook` categories. Additionally, the server-side `sourceId` filter was replaced with client-side case-insensitive filtering because Azure stores resource paths in lowercase.
+
+- **Workbook Restore** — Implemented `restore_workbooks()` in `sentinel_restore.py`. Each workbook is restored via a single PUT to `Microsoft.Insights/workbooks/{name}`.
+  - Strips server-managed properties (`timeModified`, `userId`, `revision`) from the PUT body.
+  - Rewrites `properties.sourceId` to point to the target workspace.
+  - Rewrites `fallbackResourceIds` inside `serializedData` (case-insensitive match) to reference the target workspace.
+  - Auto-detects the target resource group's Azure region for the `location` field.
+  - Preserves top-level `kind`, `tags`, and `identity` fields; sanitises `principalId`/`tenantId` for SystemAssigned identities.
+  - Supports `--generate-new-id` for fresh GUID assignment.
+  - Updated `README.md` to reflect Workbooks as implemented for both extraction and restore.
+
 - **Watchlist Restore** — Implemented `restore_watchlists()` in `sentinel_restore.py`. Watchlists and all their items are restored in a single PUT request per watchlist by embedding the full item data as CSV/TSV in the `rawContent` property. This avoids per-item API calls and the throttling that comes with thousands of individual requests.
   - Automatically infers `contentType` (`text/csv` or `text/tsv`) from the source filename when missing from the backup.
   - Generates proper RFC 4180-compliant CSV using Python's `csv` module, correctly handling values that contain commas, quotes, or newlines.

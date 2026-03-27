@@ -538,16 +538,27 @@ def extract_workbooks(
         f"/resourceGroups/{resource_group}"
         f"/providers/Microsoft.Insights/workbooks"
     )
-    params = {
-        "api-version": API_VERSION_WORKBOOKS,
-        "category": "workbook",
-        "sourceId": workspace_resource_id,
-        "canFetchContent": "true",
-    }
+    categories = ["sentinel", "workbook"]
+    all_workbooks: list = []
+    for cat in categories:
+        params = {
+            "api-version": API_VERSION_WORKBOOKS,
+            "category": cat,
+            "canFetchContent": "true",
+        }
+        log.info("Fetching workbooks from resource group '%s' (category=%s) …", resource_group, cat)
+        all_workbooks.extend(get_paginated(list_url, headers, params))
 
-    log.info("Fetching workbooks from resource group '%s' …", resource_group)
-    workbooks = get_paginated(list_url, headers, params)
-    log.info("Found %d workbook(s).", len(workbooks))
+    log.info("Found %d workbook(s) total in RG, filtering by workspace sourceId …", len(all_workbooks))
+
+    # Filter client-side with case-insensitive sourceId match — the API's
+    # sourceId filter is case-sensitive but Azure stores the path in lowercase.
+    ws_id_lower = workspace_resource_id.lower()
+    workbooks = [
+        wb for wb in all_workbooks
+        if wb.get("properties", {}).get("sourceId", "").lower() == ws_id_lower
+    ]
+    log.info("Found %d workbook(s) linked to workspace.", len(workbooks))
 
     saved = 0
     for wb in workbooks:

@@ -7,6 +7,8 @@ __pycache__/
 .python_packages/
 .DS_Store
 
+debug_*.py
+
 AGENT_INSTRUCTIONS_EXTRACTOR.md
 AGENT_INSTRUCTIONS_RESTORE.md
 .venv/

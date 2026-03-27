@@ -1164,8 +1164,171 @@ def restore_dces(
     return restored
 
 
-def restore_workbooks(subscription_id: str, resource_group: str, headers: dict, input_root: Path) -> int:
-    return _stub_not_implemented("Workbooks")
+# Properties that are read-only / server-managed and must NOT be sent in PUT.
+_WORKBOOK_STRIP_PROPS = {
+    "timeModified",
+    "userId",
+    "revision",
+}
+
+API_VERSION_WORKBOOKS = "2021-08-01"
+
+
+def _build_workbook_body(
+    backup: dict,
+    target_location: str = "",
+    target_source_id: str = "",
+) -> dict:
+    """Build the PUT request body for a Workbook.
+
+    Preserves top-level ``location``, ``kind``, ``tags``, and ``identity``
+    fields required/accepted by the API.  Strips server-managed properties.
+
+    When *target_source_id* is provided it replaces the backup's
+    ``properties.sourceId`` and rewrites ``fallbackResourceIds`` inside
+    ``serializedData`` so the workbook is linked to the target workspace.
+    """
+    src_props: dict = backup.get("properties", {})
+    clean_props = {k: v for k, v in src_props.items() if k not in _WORKBOOK_STRIP_PROPS}
+
+    # Rewrite sourceId to point to the target workspace
+    original_source_id = src_props.get("sourceId", "")
+    if target_source_id:
+        clean_props["sourceId"] = target_source_id
+
+    # Rewrite fallbackResourceIds inside serializedData
+    serialized = clean_props.get("serializedData", "")
+    if serialized and target_source_id and original_source_id:
+        try:
+            sd = json.loads(serialized)
+            fallback_ids = sd.get("fallbackResourceIds")
+            if isinstance(fallback_ids, list):
+                sd["fallbackResourceIds"] = [
+                    target_source_id if fid.lower() == original_source_id.lower() else fid
+                    for fid in fallback_ids
+                ]
+                clean_props["serializedData"] = json.dumps(sd, ensure_ascii=False)
+        except (json.JSONDecodeError, TypeError):
+            pass  # leave serializedData as-is if it can't be parsed
+
+    body: dict = {"properties": clean_props}
+
+    # location is required by the API — use target if specified
+    if target_location:
+        body["location"] = target_location
+    elif backup.get("location"):
+        body["location"] = backup["location"]
+
+    # Optional top-level fields
+    for field in ("kind", "tags"):
+        if backup.get(field):
+            body[field] = backup[field]
+
+    # Identity handling (same pattern as Logic Apps)
+    if backup.get("identity"):
+        identity = dict(backup["identity"])
+        if identity.get("type", "").lower() in ("systemassigned", "systemassigned,userassigned"):
+            identity.pop("principalId", None)
+            identity.pop("tenantId", None)
+        body["identity"] = identity
+
+    return body
+
+
+def restore_workbooks(
+    subscription_id: str,
+    resource_group: str,
+    headers: dict,
+    input_root: Path,
+    generate_new_id: bool = False,
+    target_source_id: str = "",
+) -> int:
+    """Restore Workbooks from the Workbooks/ backup folder.
+
+    Each JSON file is PUT to:
+        PUT /subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Insights/workbooks/{name}
+
+    When *target_source_id* is provided, ``properties.sourceId`` and
+    ``fallbackResourceIds`` inside ``serializedData`` are rewritten to
+    point to the target workspace.
+
+    When *generate_new_id* is True a fresh GUID is used instead of the
+    original workbook name.
+    """
+    # Auto-detect the resource group's region.
+    target_location = ""
+    try:
+        target_location = _get_resource_group_location(subscription_id, resource_group, headers)
+        log.info("  Auto-detected resource group location for Workbooks: %s", target_location)
+    except requests.RequestException as exc:
+        log.warning(
+            "  Could not auto-detect resource group location: %s — "
+            "falling back to backup location.",
+            exc,
+        )
+
+    folder = input_root / "Workbooks"
+    files = load_json_files(folder)
+    if not files:
+        log.info("No Workbook backup files found in: %s", folder)
+        return 0
+
+    log.info("Restoring %d Workbook(s) from: %s", len(files), folder)
+    params = {"api-version": API_VERSION_WORKBOOKS}
+    restored = 0
+
+    for path, backup in files:
+        original_id: str = backup.get("name", "")
+        display_name: str = (
+            backup.get("properties", {}).get("displayName")
+            or original_id
+            or path.stem
+        )
+
+        if not original_id:
+            log.warning("  Skipping %s — missing 'name' field.", path.name)
+            continue
+
+        wb_name = str(uuid.uuid4()) if generate_new_id else original_id
+        if generate_new_id:
+            log.info("  Restoring: %s  original id: %s  -> new id: %s", display_name, original_id, wb_name)
+        else:
+            log.info("  Restoring: %s  (id: %s)", display_name, wb_name)
+
+        put_url = (
+            f"{MANAGEMENT_BASE}/subscriptions/{subscription_id}"
+            f"/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.Insights/workbooks/{wb_name}"
+        )
+        body = _build_workbook_body(
+            backup,
+            target_location=target_location,
+            target_source_id=target_source_id,
+        )
+
+        try:
+            resp = requests.put(put_url, headers=headers, params=params, json=body, timeout=60)
+            resp.raise_for_status()
+            status = "created" if resp.status_code == 201 else "updated"
+            log.info("    -> %s (%d)", status, resp.status_code)
+            restored += 1
+        except requests.HTTPError as exc:
+            err_msg = ""
+            try:
+                err_msg = exc.response.json().get("error", {}).get("message", "")
+            except Exception:  # noqa: BLE001
+                pass
+            log.error(
+                "    -> HTTP %d for '%s': %s%s",
+                exc.response.status_code,
+                display_name,
+                exc,
+                f" — {err_msg}" if err_msg else "",
+            )
+        except requests.RequestException as exc:
+            log.error("    -> Request failed for '%s': %s", display_name, exc)
+
+    return restored
 
 
 # ---------------------------------------------------------------------------
@@ -2361,7 +2524,13 @@ def main() -> None:
         if wb_rg:
             try:
                 total_restored += restore_workbooks(
-                    cfg["target_subscription_id"], wb_rg, headers, input_root
+                    cfg["target_subscription_id"], wb_rg, headers, input_root,
+                    generate_new_id=args.generate_new_id,
+                    target_source_id=(
+                        f"/subscriptions/{cfg['target_subscription_id']}"
+                        f"/resourceGroups/{cfg['target_resource_group']}"
+                        f"/providers/Microsoft.OperationalInsights/workspaces/{cfg['target_workspace_name']}"
+                    ),
                 )
             except requests.HTTPError as exc:
                 log.error("Failed to restore Workbooks: %s", exc)
