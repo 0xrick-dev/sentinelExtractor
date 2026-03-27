@@ -233,6 +233,7 @@ python code/sentinel_restore.py --restore-all \
 | `--restore-data-connectors` | Data Connectors | :white_check_mark: Implemented |
 | `--restore-content-packages` | Content Packages (solutions) | :white_check_mark: Implemented |
 | `--restore-threat-intelligence` | Threat Intelligence Indicators | :white_check_mark: Implemented |
+| `--restore-ml-analytics` | Security ML Analytics Settings | :white_check_mark: Implemented |
 
 #### Restore Phases
 
@@ -242,7 +243,7 @@ When using `--restore-all`, resources are restored in dependency order across tw
 Custom Tables, Table Retention, Content Packages, Data Connectors, Product Settings
 
 **Phase 2 — Dependent Resources:**
-Alert Rules, Automation Rules, Summary Rules, Hunting, Workspace Functions, DCRs, DCEs, Logic Apps, Threat Intelligence
+Alert Rules, Automation Rules, Summary Rules, Hunting, Workspace Functions, DCRs, DCEs, Logic Apps, Threat Intelligence, ML Analytics Settings
 
 This ordering ensures that dependent resources (e.g., alert rules referencing custom tables) find their prerequisites already in place.
 

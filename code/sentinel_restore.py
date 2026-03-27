@@ -77,6 +77,7 @@ API_VERSION_HUNTING              = "2025-07-01-preview"
 API_VERSION_HUNTING_QUERIES      = "2025-07-01"
 API_VERSION_THREAT_INTELLIGENCE  = "2025-07-01-preview"
 API_VERSION_WATCHLISTS           = "2025-07-01-preview"
+API_VERSION_ML_ANALYTICS         = "2025-07-01-preview"
 
 # ---------------------------------------------------------------------------
 # Authentication
@@ -2097,6 +2098,98 @@ def restore_threat_intelligence(sentinel_base: str, headers: dict, input_root: P
     return restored
 
 # ---------------------------------------------------------------------------
+# Security ML Analytics Settings
+# ---------------------------------------------------------------------------
+
+# Properties that are read-only / server-managed and must NOT be sent in PUT.
+_ML_ANALYTICS_STRIP_PROPS = {
+    "lastModifiedUtc",
+}
+
+
+def _build_ml_analytics_body(backup: dict) -> dict:
+    """Build the PUT request body for a Security ML Analytics Setting.
+
+    The API requires ``kind`` (top-level, always ``"Anomaly"``) and
+    ``properties``.  Strips server-managed fields.
+    """
+    kind: str = backup.get("kind", "Anomaly")
+    src_props: dict = backup.get("properties", {})
+    clean_props = {k: v for k, v in src_props.items() if k not in _ML_ANALYTICS_STRIP_PROPS}
+    body: dict = {"kind": kind, "properties": clean_props}
+    if backup.get("etag"):
+        body["etag"] = backup["etag"]
+    return body
+
+
+def restore_ml_analytics_settings(
+    sentinel_base: str,
+    headers: dict,
+    input_root: Path,
+    generate_new_id: bool = False,
+) -> int:
+    """Restore Security ML Analytics Settings from the MLAnalyticsSettings/ backup folder.
+
+    Each JSON file is PUT to:
+        PUT {sentinel_base}/securityMLAnalyticsSettings/{name}?api-version=...
+
+    ML Analytics Settings use their original name (GUID).  The
+    ``generate_new_id`` flag is accepted for interface consistency but
+    is intentionally ignored — anomaly settings are tied to a
+    ``settingsDefinitionId`` and generating a new name would orphan them.
+    """
+    folder = input_root / "MLAnalyticsSettings"
+    files = load_json_files(folder)
+    if not files:
+        log.info("No ML Analytics Settings backup files found in: %s", folder)
+        return 0
+
+    log.info("Restoring %d ML Analytics Setting(s) from: %s", len(files), folder)
+    params = {"api-version": API_VERSION_ML_ANALYTICS}
+    restored = 0
+
+    for path, backup in files:
+        original_id: str = backup.get("name", "")
+        display_name: str = (
+            backup.get("properties", {}).get("displayName")
+            or original_id
+            or path.stem
+        )
+
+        if not original_id:
+            log.warning("  Skipping %s \u2014 missing 'name' field.", path.name)
+            continue
+
+        log.info("  Restoring ML Analytics setting: %s  (id: %s)", display_name, original_id)
+
+        put_url = f"{sentinel_base}/securityMLAnalyticsSettings/{original_id}"
+        body = _build_ml_analytics_body(backup)
+
+        try:
+            resp = requests.put(put_url, headers=headers, params=params, json=body, timeout=30)
+            resp.raise_for_status()
+            status = "created" if resp.status_code == 201 else "updated"
+            log.info("    -> %s (%d)", status, resp.status_code)
+            restored += 1
+        except requests.HTTPError as exc:
+            err_msg = ""
+            try:
+                err_msg = exc.response.json().get("error", {}).get("message", "")
+            except Exception:  # noqa: BLE001
+                pass
+            log.error(
+                "    -> HTTP %d for '%s': %s%s",
+                exc.response.status_code,
+                display_name,
+                exc,
+                f" \u2014 {err_msg}" if err_msg else "",
+            )
+        except requests.RequestException as exc:
+            log.error("    -> Request failed for '%s': %s", display_name, exc)
+
+    return restored
+
+# ---------------------------------------------------------------------------
 # CLI / config
 # ---------------------------------------------------------------------------
 
@@ -2185,7 +2278,7 @@ def parse_args() -> argparse.Namespace:
     what.add_argument("--restore-watchlists", action="store_true", help="Restore Watchlists")
     what.add_argument("--restore-dcr", action="store_true", help="Restore Data Collection Rules")
     what.add_argument("--restore-dce", action="store_true", help="Restore Data Collection Endpoints")
-    what.add_argument("sooks", action="store_true", help="Restore Workbooks")
+    what.add_argument("--restore-workbooks", action="store_true", help="Restore Workbooks")
     what.add_argument("--restore-logic-apps", action="store_true", help="Restore Logic Apps")
     what.add_argument("--restore-custom-tables", action="store_true", help="Restore Custom Tables")
     what.add_argument("--restore-table-retention", action="store_true", help="Restore table retention settings")
@@ -2193,6 +2286,7 @@ def parse_args() -> argparse.Namespace:
     what.add_argument("--restore-data-connectors", action="store_true", help="Restore Data Connectors")
     what.add_argument("--restore-content-packages", action="store_true", help="Restore (install) Content Packages")
     what.add_argument("--restore-threat-intelligence", action="store_true", help="Restore Threat Intelligence indicators")
+    what.add_argument("--restore-ml-analytics", action="store_true", help="Restore Security ML Analytics Settings")
 
     # ── Logic App restore mode ──────────────────────────────────────────────
     parser.add_argument(
@@ -2325,7 +2419,7 @@ def main() -> None:
         "workspace_functions", "saved_queries", "watchlists",
         "dcr", "dce", "workbooks", "logic_apps", "custom_tables",
         "table_retention", "product_settings", "data_connectors",
-        "content_packages", "threat_intelligence",
+        "content_packages", "threat_intelligence", "ml_analytics",
     ]
     if not args.restore_all and not any(getattr(args, f"restore_{f}") for f in restore_flags):
         log.error(
@@ -2564,6 +2658,13 @@ def main() -> None:
             total_restored += restore_threat_intelligence(sentinel_base, headers, input_root)
         except requests.HTTPError as exc:
             log.error("Failed to restore Threat Intelligence indicators: %s", exc)
+
+    # ── ML Analytics Settings ──────────────────────────────────────────────
+    if _wants(args, "ml-analytics"):
+        try:
+            total_restored += restore_ml_analytics_settings(sentinel_base, headers, input_root, args.generate_new_id)
+        except requests.HTTPError as exc:
+            log.error("Failed to restore ML Analytics Settings: %s", exc)
 
     log.info("Restore complete. Total items restored: %d", total_restored)
 

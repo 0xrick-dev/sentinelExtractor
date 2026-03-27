@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - 2026-03-28
+
+### Added
+
+- **Security ML Analytics Settings** — full extraction and restore support. Extracts all anomaly-type ML analytics settings from a Sentinel workspace and restores them via PUT. Strips server-managed `lastModifiedUtc` property on restore.
+
+---
+
 ## [Unreleased] - 2026-03-27
 
 ### Added

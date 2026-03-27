@@ -59,6 +59,7 @@ API_VERSION_DATA_CONNECTORS = "2025-07-01-preview"
 API_VERSION_PRODUCT_SETTINGS = "2025-07-01-preview"
 API_VERSION_IAM = "2022-04-01"
 API_VERSION_THREAT_INTELLIGENCE = "2025-07-01-preview"
+API_VERSION_ML_ANALYTICS = "2025-07-01-preview"
 MANAGEMENT_BASE = "https://management.azure.com"
 TOKEN_URL_TEMPLATE = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 WORKSPACE_BASE = (
@@ -961,6 +962,37 @@ def extract_threat_intelligence(sentinel_base: str, headers: dict, output_root: 
     return saved
 
 
+def extract_ml_analytics_settings(sentinel_base: str, headers: dict, output_root: Path) -> int:
+    """List all Security ML Analytics Settings and save each one."""
+    folder = output_root / "MLAnalyticsSettings"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    list_url = f"{sentinel_base}/securityMLAnalyticsSettings"
+    params = {"api-version": API_VERSION_ML_ANALYTICS}
+
+    log.info("Fetching Security ML Analytics Settings \u2026")
+    settings = get_paginated(list_url, headers, params)
+    log.info("Found %d ML Analytics setting(s).", len(settings))
+
+    saved = 0
+    for setting in settings:
+        try:
+            setting_id: str = setting.get("name", "")
+            kind: str = setting.get("kind", "Unknown")
+            display_name: str = (
+                setting.get("properties", {}).get("displayName")
+                or setting_id
+                or "unknown"
+            )
+            log.info("Processing ML Analytics setting [kind=%s]: %s", kind, display_name)
+            if save_json(folder, display_name, setting_id, setting):
+                saved += 1
+        except Exception as exc:  # noqa: BLE001
+            log.error("  Unexpected error processing ML Analytics setting %s: %s", setting.get("name", "?"), exc)
+
+    return saved
+
+
 def extract_iam_role_assignments(
     subscription_id: str,
     resource_group: str,
@@ -1127,6 +1159,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip extraction of threat intelligence indicators",
     )
+    parser.add_argument(
+        "--skip-ml-analytics",
+        action="store_true",
+        help="Skip extraction of Security ML Analytics Settings",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     return parser.parse_args()
 
@@ -1230,6 +1267,7 @@ def run_extraction(cfg_overrides: dict | None = None) -> dict:
             "skip_product_settings": args.skip_product_settings,
             "skip_iam": args.skip_iam,
             "skip_threat_intelligence": args.skip_threat_intelligence,
+            "skip_ml_analytics": args.skip_ml_analytics,
         }
 
     if debug:
@@ -1572,6 +1610,18 @@ def _run_all_extractions(
             log.error("Failed to extract threat intelligence indicators: %s", exc)
     else:
         summary["Threat Intelligence"] = "Skipped"
+
+    if not should_skip("skip_ml_analytics"):
+        try:
+            saved = extract_ml_analytics_settings(sentinel_base, headers, output_root)
+            total_saved += saved
+            summary["ML Analytics Settings"] = str(saved)
+            log.info("ML Analytics settings extracted: %d", saved)
+        except requests.HTTPError as exc:
+            summary["ML Analytics Settings"] = "FAILED"
+            log.error("Failed to extract ML Analytics settings: %s", exc)
+    else:
+        summary["ML Analytics Settings"] = "Skipped"
 
     # Persist file tracker
     persist_tracker()
