@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - 2026-04-24
+
+### Added
+
+- **Resume Mode (`--resume`)** — New flag that allows a long-running extraction to be safely re-run without re-downloading resources already saved to disk. Each per-item extractor short-circuits if the resource has a valid JSON file on disk (tracker entry exists, file exists, file is non-empty, file parses as JSON). Broken or partial files are automatically re-fetched. Applies to all extraction categories: alert rules, automation rules, summary rules, hunting, workspace functions, saved queries, data collection rules, data collection endpoints, workbooks, logic apps, watchlists, custom tables, content packages, data connectors, product settings, IAM, threat intelligence, and security ML analytics settings. Implementation is a single helper `should_skip_existing()` called early in each extractor's per-item loop.
+
+- **Per-Watchlist Token Refresh** — `extract_watchlists()` now optionally accepts the `TokenManager` and refreshes the bearer token before each watchlist's items call, eliminating trailing 401 Unauthorized errors on workspaces with large watchlists (>60 min enumeration). The tracker is also persisted after every successful watchlist save so a later crash does not lose resume state.
+
+- **Back-Compat Flag (`--skip-existing-watchlists`)** — Same skip-if-exists behavior as `--resume`, but scoped to watchlists only. Kept for users who want the narrowest possible change; `--resume` is now the recommended flag.
+
+- **SP Permission Diagnostic (`setup/check_app_permissions.ps1`)** — New read-only PowerShell script that verifies an App Registration's effective permissions against the Sentinel/ARM data plane. Acquires an ARM token and decodes it; lists Entra directory roles via Microsoft Graph; lists Azure RBAC role assignments at subscription scope; probes the workspace watchlists endpoint and interprets the HTTP status (200 → OK, 401 → token/tenant/secret, 403 → no Azure RBAC, 404 → wrong subscription/RG/workspace). Supports `-EnvFile` to read credentials from a `.env` file.
+
+### Changed
+
+- **`code/sentinel_extractor.py`** — Added `--resume` flag, `should_skip_existing()` helper, per-item resume short-circuits across all categories, per-watchlist token refresh, and `--skip-existing-watchlists` back-compat flag. No breaking changes to existing behavior or function signatures.
+
+### Documentation
+
+- **README.md** — Added `setup/` to the project structure tree. Added `--resume`, `--resume --only-watchlists`, and `--skip-existing-watchlists` usage examples. Added new sections: Resume Mode, Per-Watchlist Token Refresh, and Verifying App Registration Permissions.
+
+### Contributors
+
+- oguzhanf
+
+---
+
 ## [Unreleased] - 2026-04-09
 
 ### Added
