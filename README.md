@@ -37,6 +37,10 @@ Restoration is supported for all of the above resource types.
 │   └── requirements.txt               # Function App dependencies
 ├── gh/                                # Generated GitHub Actions package (see github.md)
 │   └── code/                          # Copied source for self-contained deployment
+├── setup/                             # Diagnostic and setup utilities
+│   ├── check_app_permissions.ps1      # Verify SP permissions against Sentinel/ARM
+│   ├── setup_backup.ps1
+│   └── setup_backup.sh
 ├── configure_function_app.ps1         # PowerShell — Function App config & deploy
 ├── configure_function_app.sh          # Bash — Function App config & deploy
 ├── configure_gh_workflow.ps1          # PowerShell — GitHub Actions workflow generator
@@ -180,6 +184,24 @@ Force UID-suffixed filenames for Windows-safe backups when resource names are ve
 
 ```bash
 python code/sentinel_extractor.py --filename-uid
+```
+
+Resume an interrupted extraction (skips resources already saved to disk):
+
+```bash
+python code/sentinel_extractor.py --resume
+```
+
+Resume only watchlists (e.g. that's the only category that failed):
+
+```bash
+python code/sentinel_extractor.py --resume --only-watchlists
+```
+
+Skip already-downloaded watchlists without enabling full resume (back-compat):
+
+```bash
+python code/sentinel_extractor.py --skip-existing-watchlists
 ```
 
 Skip specific resource types:
@@ -444,6 +466,50 @@ The Function App uses Managed Identity for all storage access — no connection 
 | `KEYVAULT_GITHUB_TOKEN_SECRET` | Secret name in Key Vault holding the GitHub PAT | `github-token` |
 | `GITHUB_REPO` | GitHub repo (`owner/repo`) | — |
 | `GITHUB_BRANCH` | GitHub branch | `main` |
+
+## Resume Mode
+
+The `--resume` flag allows a long-running extraction to be safely re-run without re-downloading resources that were already successfully saved. When `--resume` is set, every per-item extractor short-circuits if the resource already has a valid JSON file on disk. A file is considered valid when:
+
+1. A tracker entry exists for the resource
+2. The file exists on disk
+3. The file is non-empty
+4. The file parses as valid JSON
+
+If any check fails, the file is treated as broken or partial and is re-fetched. This means a backup interrupted mid-write or with an empty file from a previous failure is automatically healed on the next run, while complete files are skipped.
+
+All extraction categories support resume: alert rules, automation rules, summary rules, hunting, workspace functions, saved queries, data collection rules, data collection endpoints, workbooks, logic apps, watchlists, custom tables, content packages, data connectors, product settings, IAM, threat intelligence, and security ML analytics settings.
+
+The `--skip-existing-watchlists` flag provides the same behavior scoped to watchlists only, for users who want the narrowest possible change.
+
+> **Note:** On the first run (empty tracker), `--resume` has no effect — all resources are fetched normally.
+
+### Per-Watchlist Token Refresh
+
+Workspaces with very large watchlists (tens of thousands of items) can take over 60 minutes to enumerate. To prevent trailing 401 Unauthorized errors caused by bearer token expiry mid-loop, the watchlist extractor now refreshes the token before each watchlist's items call. The tracker is also persisted after every successful watchlist save so a later crash does not lose resume state.
+
+## Verifying App Registration Permissions
+
+The `setup/check_app_permissions.ps1` diagnostic script helps confirm whether the App Registration (service principal) is actually authorized against the Sentinel/ARM data plane. This is useful when triaging authentication or authorization issues — a common confusion point is when a SP has been granted Entra directory roles (e.g. Global Reader) instead of Azure RBAC roles (e.g. Microsoft Sentinel Reader).
+
+The script:
+
+1. Acquires an ARM token via client credentials and decodes it (audience, tenant, appid, SP object ID, expiry, roles claim)
+2. Lists Entra directory roles assigned to the SP via Microsoft Graph
+3. Lists Azure RBAC role assignments for the SP at the subscription scope
+4. Performs a probe GET against the workspace's watchlists endpoint and interprets the HTTP status:
+   - **200** → OK
+   - **401** → token, tenant, or secret issue
+   - **403** → no Azure RBAC role assigned
+   - **404** → wrong subscription, resource group, or workspace name
+
+Usage:
+
+```powershell
+.\setup\check_app_permissions.ps1 -EnvFile .\code\.env
+```
+
+> **Tip:** This script is read-only and makes no changes to your Azure environment.
 
 ## Output Structure
 
