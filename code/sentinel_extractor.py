@@ -179,6 +179,7 @@ class TokenManager:
 _file_tracker: dict = {}
 _tracker_path: Path | None = None
 _filename_uid_mode = False
+_resume_mode = False
 
 MAX_FILENAME_LENGTH = 255
 UID_SUFFIX_LENGTH = 16
@@ -192,6 +193,40 @@ def load_tracker(output_root: Path) -> None:
         _file_tracker = json.loads(_tracker_path.read_text(encoding="utf-8"))
     else:
         _file_tracker = {}
+
+
+def set_resume_mode(enabled: bool) -> None:
+    """Enable resume mode: skip resources that already have a valid JSON file on disk."""
+    global _resume_mode
+    _resume_mode = enabled
+
+
+def should_skip_existing(folder: Path, resource_id: str) -> bool:
+    """Return True if resume mode is on and a valid JSON file already exists for this resource.
+
+    Validity = tracker entry present, file exists, non-empty, and parseable JSON.
+    A broken/partial file (missing, empty, or invalid JSON) returns False so the
+    caller re-fetches and overwrites it — guaranteeing a solid backup.
+    """
+    if not _resume_mode:
+        return False
+    tracker_key = f"{folder.name}/{resource_id}"
+    entry = _file_tracker.get(tracker_key)
+    if not entry:
+        return False
+    filename = entry.get("filename")
+    if not filename:
+        return False
+    path = folder / filename
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return False
+        with path.open("r", encoding="utf-8") as fh:
+            json.load(fh)
+    except (OSError, ValueError):
+        log.info("  Resume: existing file is broken, re-fetching: %s", path.name)
+        return False
+    return True
 
 
 def persist_tracker() -> None:
@@ -359,6 +394,9 @@ def extract_alert_rules(sentinel_base: str, headers: dict, output_root: Path) ->
                 or rule.get("name")
                 or "unknown"
             )
+            if should_skip_existing(folder, rule_id):
+                log.info("Skipping existing alert rule [kind=%s]: %s", kind, display_name)
+                continue
             log.info("Processing alert rule [kind=%s]: %s", kind, display_name)
 
             # Fetch the full rule details
@@ -400,6 +438,9 @@ def extract_automation_rules(sentinel_base: str, headers: dict, output_root: Pat
                 or rule.get("name")
                 or "unknown"
             )
+            if should_skip_existing(folder, rule_id):
+                log.info("Skipping existing automation rule: %s", display_name)
+                continue
             log.info("Processing automation rule: %s", display_name)
 
             # Fetch the full rule details
@@ -441,6 +482,9 @@ def extract_summary_rules(workspace_base: str, headers: dict, output_root: Path)
                 or rule_name
                 or "unknown"
             )
+            if should_skip_existing(folder, rule_name):
+                log.info("Skipping existing summary rule: %s", display_name)
+                continue
             log.info("Processing summary rule: %s", display_name)
 
             # Fetch the full rule details
@@ -504,6 +548,9 @@ def extract_workspace_functions(workspace_base: str, headers: dict, output_root:
                 or func_id
                 or "unknown"
             )
+            if should_skip_existing(folder, func_id):
+                log.info("Skipping existing workspace function: %s", display_name)
+                continue
             log.info("Processing workspace function: %s", display_name)
             if save_json(folder, display_name, func_id, func):
                 saved += 1
@@ -541,6 +588,9 @@ def extract_saved_queries(workspace_base: str, headers: dict, output_root: Path)
                 or query_id
                 or "unknown"
             )
+            if should_skip_existing(folder, query_id):
+                log.info("Skipping existing saved query: %s", display_name)
+                continue
             log.info("Processing saved query: %s", display_name)
             if save_json(folder, display_name, query_id, query):
                 saved += 1
@@ -588,6 +638,9 @@ def extract_dcrs(
         try:
             dcr_name: str = dcr.get("name", "")
             display_name: str = dcr_name or "unknown"
+            if should_skip_existing(folder, dcr_name):
+                log.info("Skipping existing DCR: %s", display_name)
+                continue
             log.info("Processing DCR: %s", display_name)
             if save_json(folder, display_name, dcr_name, dcr):
                 saved += 1
@@ -623,6 +676,9 @@ def extract_dces(
         try:
             dce_name: str = dce.get("name", "")
             display_name: str = dce_name or "unknown"
+            if should_skip_existing(folder, dce_name):
+                log.info("Skipping existing DCE: %s", display_name)
+                continue
             log.info("Processing DCE: %s", display_name)
             if save_json(folder, display_name, dce_name, dce):
                 saved += 1
@@ -683,6 +739,9 @@ def extract_workbooks(
                 or wb_name
                 or "unknown"
             )
+            if should_skip_existing(folder, wb_name):
+                log.info("Skipping existing workbook: %s", display_name)
+                continue
             log.info("Processing workbook: %s", display_name)
             if save_json(folder, display_name, wb_name, wb):
                 saved += 1
@@ -715,6 +774,9 @@ def extract_hunting(sentinel_base: str, workspace_base: str, headers: dict, outp
                 or hunt_id
                 or "unknown"
             )
+            if should_skip_existing(folder, hunt_id):
+                log.info("Skipping existing hunt: %s", display_name)
+                continue
             log.info("Processing hunt: %s", display_name)
 
             get_url = f"{sentinel_base}/hunts/{hunt_id}"
@@ -801,6 +863,9 @@ def extract_logic_apps(subscription_id: str, resource_group: str, headers: dict,
         try:
             app_name: str = app.get("name", "")
             display_name: str = app_name or "unknown"
+            if should_skip_existing(folder, app_name):
+                log.info("Skipping existing Logic App: %s", display_name)
+                continue
             log.info("Processing Logic App: %s", display_name)
 
             get_url = (
@@ -824,8 +889,19 @@ def extract_logic_apps(subscription_id: str, resource_group: str, headers: dict,
     return saved
 
 
-def extract_watchlists(sentinel_base: str, headers: dict, output_root: Path) -> int:
-    """List all Watchlists and their items; save each watchlist as a single JSON file."""
+def extract_watchlists(
+    sentinel_base: str,
+    headers: dict,
+    output_root: Path,
+    token_mgr: "TokenManager | None" = None,
+    skip_existing: bool = False,
+) -> int:
+    """List all Watchlists and their items; save each watchlist as a single JSON file.
+
+    If `token_mgr` is provided, the access token is refreshed before each watchlist
+    so long-running exports do not 401 on token expiry. If `skip_existing` is True,
+    any watchlist already present in the file tracker is skipped (resume mode).
+    """
     folder = output_root / "Watchlists"
     folder.mkdir(parents=True, exist_ok=True)
 
@@ -833,16 +909,30 @@ def extract_watchlists(sentinel_base: str, headers: dict, output_root: Path) -> 
     params = {"api-version": API_VERSION_WATCHLISTS}
 
     log.info("Fetching Watchlists …")
+    if token_mgr is not None:
+        token_mgr.refresh_headers(headers)
     watchlists = get_paginated(list_url, headers, params)
     log.info("Found %d Watchlist(s).", len(watchlists))
 
     saved = 0
+    skipped = 0
     for watchlist in watchlists:
         try:
             props = watchlist.get("properties", {})
             display_name: str = props.get("displayName") or watchlist.get("name", "unknown")
             watchlist_alias: str = props.get("watchlistAlias") or watchlist.get("name", "")
+
+            # Resume support: skip watchlists already saved on disk
+            if skip_existing or should_skip_existing(folder, watchlist_alias):
+                log.info("Skipping existing Watchlist: %s", display_name)
+                skipped += 1
+                continue
+
             log.info("Processing Watchlist: %s", display_name)
+
+            # Refresh token before each watchlist to survive long-running exports
+            if token_mgr is not None:
+                token_mgr.refresh_headers(headers)
 
             # Fetch all items for this watchlist
             items_url = f"{sentinel_base}/watchlists/{watchlist_alias}/watchlistItems"
@@ -859,6 +949,12 @@ def extract_watchlists(sentinel_base: str, headers: dict, output_root: Path) -> 
 
             if save_json(folder, display_name, watchlist_alias, combined):
                 saved += 1
+                # Persist tracker after every successful watchlist so a later
+                # crash does not lose resume state
+                try:
+                    persist_tracker()
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as exc:  # noqa: BLE001
             log.error(
                 "  Unexpected error processing Watchlist %s: %s",
@@ -866,6 +962,8 @@ def extract_watchlists(sentinel_base: str, headers: dict, output_root: Path) -> 
                 exc,
             )
 
+    if skip_existing and skipped:
+        log.info("Watchlists skipped (already on disk): %d", skipped)
     return saved
 
 
@@ -893,6 +991,9 @@ def extract_custom_tables(workspace_base: str, headers: dict, output_root: Path)
         try:
             table_name: str = table.get("name", "")
             display_name: str = table_name or "unknown"
+            if should_skip_existing(folder, table_name):
+                log.info("Skipping existing custom table: %s", display_name)
+                continue
             log.info("Processing custom table: %s", display_name)
             if save_json(folder, display_name, table_name, table):
                 saved += 1
@@ -964,6 +1065,9 @@ def extract_content_packages(sentinel_base: str, headers: dict, output_root: Pat
                 or pkg_id
                 or "unknown"
             )
+            if should_skip_existing(folder, pkg_id):
+                log.info("Skipping existing content package: %s", display_name)
+                continue
             log.info("Processing content package: %s", display_name)
             if save_json(folder, display_name, pkg_id, pkg):
                 saved += 1
@@ -995,6 +1099,9 @@ def extract_data_connectors(sentinel_base: str, headers: dict, output_root: Path
                 or connector_id
                 or "unknown"
             )
+            if should_skip_existing(folder, connector_id):
+                log.info("Skipping existing data connector [kind=%s]: %s", kind, display_name)
+                continue
             log.info("Processing data connector [kind=%s]: %s", kind, display_name)
             if save_json(folder, display_name, connector_id, connector):
                 saved += 1
@@ -1025,6 +1132,9 @@ def extract_product_settings(sentinel_base: str, headers: dict, output_root: Pat
             setting_name: str = setting.get("name", "")
             kind: str = setting.get("kind", "Unknown")
             display_name: str = setting_name or kind or "unknown"
+            if should_skip_existing(folder, setting_name):
+                log.info("Skipping existing product setting [kind=%s]: %s", kind, display_name)
+                continue
             log.info("Processing product setting [kind=%s]: %s", kind, display_name)
             if save_json(folder, display_name, setting_name, setting):
                 saved += 1
@@ -1066,6 +1176,9 @@ def extract_threat_intelligence(sentinel_base: str, headers: dict, output_root: 
                 or indicator_id
                 or "unknown"
             )
+            if should_skip_existing(folder, indicator_id):
+                log.debug("Skipping existing TI indicator: %s", display_name)
+                continue
             log.info("Processing threat intelligence indicator: %s", display_name)
             if save_json(folder, display_name, indicator_id, indicator):
                 saved += 1
@@ -1097,6 +1210,9 @@ def extract_ml_analytics_settings(sentinel_base: str, headers: dict, output_root
                 or setting_id
                 or "unknown"
             )
+            if should_skip_existing(folder, setting_id):
+                log.info("Skipping existing ML Analytics setting [kind=%s]: %s", kind, display_name)
+                continue
             log.info("Processing ML Analytics setting [kind=%s]: %s", kind, display_name)
             if save_json(folder, display_name, setting_id, setting):
                 saved += 1
@@ -1140,6 +1256,9 @@ def extract_iam_role_assignments(
                 else assignment_name
                 or "unknown"
             )
+            if should_skip_existing(folder, assignment_name):
+                log.info("Skipping existing role assignment: %s", display_name)
+                continue
             log.info("Processing role assignment: %s", display_name)
             if save_json(folder, display_name, assignment_name, assignment):
                 saved += 1
@@ -1244,6 +1363,25 @@ def parse_args() -> argparse.Namespace:
         "--skip-watchlists",
         action="store_true",
         help="Skip extraction of Watchlists",
+    )
+    parser.add_argument(
+        "--skip-existing-watchlists",
+        action="store_true",
+        help=(
+            "Resume mode for watchlists ONLY: skip any watchlist whose JSON file "
+            "already exists in the output folder. Prefer --resume to apply this to "
+            "all categories."
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume mode: skip any resource whose JSON file already exists on disk "
+            "AND is valid JSON. Broken/partial files are detected (missing, empty, or "
+            "unparseable) and re-fetched so the backup is always complete. Applies to "
+            "all categories."
+        ),
     )
     parser.add_argument(
         "--skip-custom-tables",
@@ -1433,6 +1571,9 @@ def run_extraction(cfg_overrides: dict | None = None) -> dict:
             "only_threat_intelligence": args.only_threat_intelligence,
             "only_ml_analytics": args.only_ml_analytics,
         }
+        # Resume / fast-rerun flags
+        cfg["skip_existing_watchlists"] = args.skip_existing_watchlists
+        cfg["resume"] = args.resume
 
     if debug:
         logging.getLogger().setLevel(logging.DEBUG)
@@ -1470,6 +1611,9 @@ def run_extraction(cfg_overrides: dict | None = None) -> dict:
     # Load file tracker for change detection
     load_tracker(output_root)
     set_filename_uid_mode(filename_uid)
+    set_resume_mode(bool(cfg.get("resume")))
+    if cfg.get("resume"):
+        log.info("Resume mode enabled: existing valid JSON files will be skipped; broken/partial files will be re-fetched.")
     if filename_uid:
         log.info("Filename UID mode enabled.")
 
@@ -1720,7 +1864,13 @@ def _run_all_extractions(
     if not should_skip("skip_watchlists"):
         try:
             token_mgr.refresh_headers(headers)
-            saved = extract_watchlists(sentinel_base, headers, output_root)
+            saved = extract_watchlists(
+                sentinel_base,
+                headers,
+                output_root,
+                token_mgr=token_mgr,
+                skip_existing=bool(cfg.get("skip_existing_watchlists")),
+            )
             total_saved += saved
             summary["Watchlists"] = str(saved)
             log.info("Watchlists extracted: %d", saved)
